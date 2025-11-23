@@ -20,9 +20,6 @@ services:
     depends_on:
       - db
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/Balu
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: 1234
       GEMINI_API_KEY: AIzaSyDQK0dPdHR6isHJJZt2VR4ym4iqHoOuqc8
     ports:
       - "8080:8080"
@@ -30,3 +27,4 @@ services:
 
 volumes:
   postgres_data:
+
