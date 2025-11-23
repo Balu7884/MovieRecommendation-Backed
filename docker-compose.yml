@@ -3,7 +3,6 @@ version: "3.9"
 services:
   db:
     image: postgres:16
-    container_name: movie_recommend_db
     environment:
       POSTGRES_DB: Balu
       POSTGRES_USER: postgres
@@ -15,17 +14,16 @@ services:
     restart: unless-stopped
 
   backend:
-    build: .
-    container_name: movie_recommend_backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     depends_on:
       - db
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/Balu
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: 1234
-      GEMINI_API_KEY: "your_real_gemini_key_here"
-      # Optional: You can override Spring port if needed
-      # SERVER_PORT: 8080
+      GEMINI_API_KEY: AIzaSyDQK0dPdHR6isHJJZt2VR4ym4iqHoOuqc8
     ports:
       - "8080:8080"
     restart: unless-stopped
