@@ -37,25 +37,24 @@ public class GeminiClientService {
             String url = String.format("%s/models/%s:generateContent?key=%s",
                     baseUrl, model, apiKey);
 
-            // ---- Correct JSON structure ----
+            // ---- OFFICIAL GOOGLE FORMAT ----
             ObjectNode textNode = mapper.createObjectNode();
             textNode.put("text", prompt);
 
             ObjectNode contentNode = mapper.createObjectNode();
             contentNode.put("role", "user");
-            contentNode.set("parts", mapper.createArrayNode().add(textNode));
+            contentNode.putArray("parts").add(textNode);
 
             ObjectNode requestNode = mapper.createObjectNode();
-            requestNode.set("contents", mapper.createArrayNode().add(contentNode));
+            requestNode.putArray("contents").add(contentNode);
 
-            String requestJson = mapper.writeValueAsString(requestNode);
+            log.info("Sending Gemini request: {}", requestNode);
 
-            log.info("Sending JSON to Gemini: {}", requestJson);
-
+            // ❗IMPORTANT: SEND JSON OBJECT, NOT STRING
             String rawResponse = webClient.post()
                     .uri(url)
                     .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                    .bodyValue(requestJson)
+                    .bodyValue(requestNode)  // <-- correct
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -68,7 +67,7 @@ public class GeminiClientService {
 
             JsonNode root = mapper.readTree(rawResponse);
 
-            // Extract text
+            // Extract model text response
             return root.path("candidates")
                     .path(0)
                     .path("content")
@@ -83,6 +82,7 @@ public class GeminiClientService {
         }
     }
 }
+
 
 
 
