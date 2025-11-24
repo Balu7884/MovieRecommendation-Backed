@@ -34,19 +34,19 @@ public class GeminiClientService {
 
     public String getRecommendationsFromGemini(String prompt) {
         try {
-            String url = "%s/models/%s:generateContent?key=%s"
-                    .formatted(baseUrl, model, apiKey);
+            String url = String.format("%s/models/%s:generateContent?key=%s",
+                    baseUrl, model, apiKey);
 
-            // Build JSON
+            // ---- Correct JSON structure ----
             ObjectNode textNode = mapper.createObjectNode();
             textNode.put("text", prompt);
 
-            ObjectNode messageNode = mapper.createObjectNode();
-            messageNode.put("role", "user");  // ✅ REQUIRED
-            messageNode.set("parts", mapper.createArrayNode().add(textNode));
+            ObjectNode contentNode = mapper.createObjectNode();
+            contentNode.put("role", "user");
+            contentNode.set("parts", mapper.createArrayNode().add(textNode));
 
             ObjectNode requestNode = mapper.createObjectNode();
-            requestNode.set("contents", mapper.createArrayNode().add(messageNode));
+            requestNode.set("contents", mapper.createArrayNode().add(contentNode));
 
             String requestJson = mapper.writeValueAsString(requestNode);
 
@@ -68,10 +68,10 @@ public class GeminiClientService {
 
             JsonNode root = mapper.readTree(rawResponse);
 
+            // Extract text
             return root.path("candidates")
                     .path(0)
                     .path("content")
-                    .path(0)
                     .path("parts")
                     .path(0)
                     .path("text")
@@ -82,9 +82,7 @@ public class GeminiClientService {
             throw new RuntimeException("Error calling Gemini API: " + e.getMessage(), e);
         }
     }
-
 }
-
 
 
 
