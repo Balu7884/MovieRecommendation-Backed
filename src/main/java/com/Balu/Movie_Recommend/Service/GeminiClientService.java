@@ -2,6 +2,7 @@ package com.Balu.Movie_Recommend.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -36,27 +37,26 @@ public class GeminiClientService {
             String url = "%s/models/%s:generateContent?key=%s"
                     .formatted(baseUrl, model, apiKey);
 
-            // Wrap prompt properly as JSON
-            String requestJson = """
-                    {
-                      "contents": [
-                        {
-                          "parts": [
-                            {
-                              "text": %s
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                    """.formatted(mapper.writeValueAsString(prompt)); // escape quotes etc.
+            // ✅ Build safe, valid JSON using ObjectMapper
+            ObjectNode textNode = mapper.createObjectNode();
+            textNode.put("text", prompt);
+
+            ObjectNode partNode = mapper.createObjectNode();
+            partNode.set("parts", mapper.createArrayNode().add(textNode));
+
+            ObjectNode contentsNode = mapper.createObjectNode();
+            contentsNode.set("contents", mapper.createArrayNode().add(partNode));
+
+            String requestJson = mapper.writeValueAsString(contentsNode);
+
+            log.info("Sending JSON to Gemini: {}", requestJson);
 
             String rawResponse = webClient.post()
                     .uri(url)
                     .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                     .bodyValue(requestJson)
                     .retrieve()
-                    .bodyToMono(String.class)   // 👈 IMPORTANT: read as String, NOT JsonNode
+                    .bodyToMono(String.class)
                     .block();
 
             log.info("Gemini raw response: {}", rawResponse);
@@ -65,11 +65,9 @@ public class GeminiClientService {
                 return "";
             }
 
-            // Now parse with our own ObjectMapper (com.fasterxml)
             JsonNode root = mapper.readTree(rawResponse);
 
-            // Standard Gemini structure:
-            // candidates[0].content.parts[0].text
+            // Extract Gemini response text
             String text = root.path("candidates")
                     .path(0)
                     .path("content")
@@ -87,6 +85,7 @@ public class GeminiClientService {
         }
     }
 }
+
 
 
 
