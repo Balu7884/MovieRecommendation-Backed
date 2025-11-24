@@ -34,9 +34,12 @@ public class GeminiClientService {
 
     public String getRecommendationsFromGemini(String prompt) {
         try {
-            String url = String.format("%s/models/%s:generateContent?key=%s",
-                    baseUrl, model, apiKey);
+            String url = String.format(
+                    "%s/models/%s:generateContent?key=%s",
+                    baseUrl, model, apiKey
+            );
 
+            // ---- CORRECT REQUEST JSON ----
             ObjectNode textNode = mapper.createObjectNode();
             textNode.put("text", prompt);
 
@@ -66,8 +69,7 @@ public class GeminiClientService {
 
             JsonNode root = mapper.readTree(rawResponse);
 
-            return root
-                    .path("candidates")
+            return root.path("candidates")
                     .path(0)
                     .path("content")
                     .path("parts")
@@ -82,8 +84,6 @@ public class GeminiClientService {
     }
 
 }
-
-
 
 
 
