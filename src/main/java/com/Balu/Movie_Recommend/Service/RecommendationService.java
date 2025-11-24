@@ -1,5 +1,6 @@
 package com.Balu.Movie_Recommend.Service;
 
+import com.Balu.Movie_Recommend.Entity.AppUser;
 import com.Balu.Movie_Recommend.Entity.ChatMessage;
 import com.Balu.Movie_Recommend.Entity.MovieRecommendation;
 import com.Balu.Movie_Recommend.Entity.SenderType;
@@ -27,13 +28,10 @@ public class RecommendationService {
     private final ChatMessageRepository chatRepo;
     private final MovieRecommendationRepository movieRepo;
 
-    // Regex to find first JSON array anywhere in text
+    // Regex to extract any JSON array
     private static final Pattern ARRAY_PATTERN =
             Pattern.compile("\\[(?:[^\\]\\[]|\\n|\\r)*?\\]", Pattern.DOTALL);
 
-    /**
-     * Main recommendation workflow.
-     */
     public List<MovieRecommendation> getMovieSuggestions(
             Long userId,
             String userMessage,
@@ -42,7 +40,11 @@ public class RecommendationService {
             Integer yearTo,
             String mood
     ) {
-        // Fetch previous chat messages
+
+        // Wrap userId inside an AppUser for relational mapping
+        AppUser userRef = AppUser.builder().id(userId).build();
+
+        // Fetch chat history
         List<ChatMessage> history = chatRepo.findTop20ByUserIdOrderByTimestampDesc(userId);
         String historySummary = buildHistorySummary(history);
 
@@ -54,26 +56,25 @@ public class RecommendationService {
         String geminiResponse = geminiClientService.getRecommendationsFromGemini(prompt);
         log.debug("Gemini raw response for user {}: {}", userId, geminiResponse);
 
-        // Parse
+        // Parse JSON
         List<MovieRecommendation> movies = parseMoviesFromJson(geminiResponse, userId);
-        log.info("Parsed {} movie recommendations for user {}", movies.size(), userId);
+        log.info("Parsed {} movies for user {}", movies.size(), userId);
 
-        // Save chat logs
+        // Save USER chat message
         chatRepo.save(ChatMessage.builder()
-                .userId(userId)
+                .user(userRef)               // FIXED (relation)
                 .sender(SenderType.USER)
                 .content(userMessage)
-                .timestamp(LocalDateTime.now())
                 .build());
 
+        // Save AI response metadata
         chatRepo.save(ChatMessage.builder()
-                .userId(userId)
+                .user(userRef)               // FIXED (relation)
                 .sender(SenderType.AI)
                 .content("Recommended " + movies.size() + " movies.")
-                .timestamp(LocalDateTime.now())
                 .build());
 
-        // Save recommendations
+        // Save movie recommendations
         if (!movies.isEmpty()) {
             movieRepo.saveAll(movies);
         }
@@ -81,12 +82,8 @@ public class RecommendationService {
         return movies;
     }
 
-    /**
-     * Summarizes user's previous conversation messages.
-     */
     private String buildHistorySummary(List<ChatMessage> history) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("User's recent movie taste:\n");
+        StringBuilder sb = new StringBuilder("User recent taste:\n");
 
         history.stream()
                 .sorted(Comparator.comparing(ChatMessage::getTimestamp))
@@ -98,40 +95,26 @@ public class RecommendationService {
         return sb.toString();
     }
 
-    /**
-     * Builds strict prompt forcing Gemini to output only a JSON array.
-     */
-    private String buildPrompt(String history, String userMessage,
-                               String genre, Integer yearFrom, Integer yearTo, String mood) {
+    private String buildPrompt(String history, String userMessage, String genre,
+                               Integer yearFrom, Integer yearTo, String mood) {
 
         return """
                 You are a movie recommendation engine.
-                IMPORTANT: Return ONLY a JSON ARRAY. NO TEXT. NO MARKDOWN. NO EXTRA CONTENT.
+                Respond ONLY with a JSON ARRAY of movie objects. NO TEXT. NO MARKDOWN.
 
-                Each movie object MUST include fields:
-                - title
-                - year
-                - genre
-                - moodTag
-                - posterUrl  (direct JPG/PNG image URL)
-            - previewUrl (direct MP4/WebM 3–10 sec clip)
-                - rating     (0–10)
+                Required fields:
+                title, year, genre, moodTag, posterUrl, previewUrl, rating
 
-                If you must use YouTube trailer, convert into:
-                https://www.yt-download.ai/api/button/mp4/{VIDEO_ID}
-
-                --- USER HISTORY ---
+                User history:
                 %s
 
-                --- CURRENT REQUEST ---
+                User request:
                 %s
 
-                --- FILTERS ---
-                Genre: %s
-                Year range: %s to %s
-                Mood: %s
+                Filters:
+                Genre=%s, Year=%s to %s, Mood=%s
 
-                Generate 5–8 high-quality verified real movie recommendations.
+                Generate 5–8 real movies.
                 """.formatted(
                 history,
                 userMessage,
@@ -142,69 +125,39 @@ public class RecommendationService {
         );
     }
 
-    /**
-     * Extracts & parses JSON array from Gemini output.
-     */
     private List<MovieRecommendation> parseMoviesFromJson(String jsonText, Long userId) {
         if (jsonText == null || jsonText.isBlank()) {
-            log.warn("Gemini returned empty response");
+            log.warn("Empty Gemini response");
             return List.of();
         }
 
-        String cleaned = jsonText.trim();
-
-        // Remove markdown fences
-        if (cleaned.startsWith("```")) {
-            int lastFence = cleaned.lastIndexOf("```");
-            if (lastFence != -1) {
-                cleaned = cleaned.substring(0, lastFence)
-                        .replaceFirst("^```.*?\\n", "")
-                        .trim();
-            }
-        }
-
-        // Extract JSON array using regex
-        String extractedArray = extractJsonArray(cleaned);
-        if (extractedArray == null) {
-            log.warn("No JSON array found in Gemini response: {}", cleaned);
+        String cleaned = extractJsonArray(jsonText);
+        if (cleaned == null) {
+            log.warn("No JSON array found in response");
             return List.of();
         }
 
         ObjectMapper mapper = new ObjectMapper();
-        List<MovieRecommendation> result = new ArrayList<>();
+        List<MovieRecommendation> list = new ArrayList<>();
 
         try {
-            JsonNode root = mapper.readTree(extractedArray);
+            JsonNode root = mapper.readTree(cleaned);
 
             if (root.isArray()) {
-                root.forEach(node -> result.add(buildMovieFromNode(node, userId)));
-            } else if (root.has("movies") && root.get("movies").isArray()) {
-                root.get("movies").forEach(node -> result.add(buildMovieFromNode(node, userId)));
-            } else {
-                log.warn("Unexpected JSON structure: {}", extractedArray);
+                root.forEach(node -> list.add(buildMovieFromNode(node, userId)));
             }
-
         } catch (Exception e) {
-            log.error("Failed to parse Gemini JSON: {}", extractedArray, e);
+            log.error("JSON parse error: {}", cleaned, e);
         }
 
-        return result;
+        return list;
     }
 
-    /**
-     * Regex-based extractor for any JSON array found in the string.
-     */
     private String extractJsonArray(String text) {
         Matcher m = ARRAY_PATTERN.matcher(text);
-        if (m.find()) {
-            return m.group();
-        }
-        return null;
+        return m.find() ? m.group() : null;
     }
 
-    /**
-     * Converts JSON node to MovieRecommendation entity.
-     */
     private MovieRecommendation buildMovieFromNode(JsonNode node, Long userId) {
         return MovieRecommendation.builder()
                 .userId(userId)
@@ -213,12 +166,13 @@ public class RecommendationService {
                 .genre(node.path("genre").asText(""))
                 .moodTag(node.path("moodTag").asText(""))
                 .posterUrl(node.path("posterUrl").asText(""))
-                .previewUrl(node.path("previewUrl").asText(""))   // Important
+                .previewUrl(node.path("previewUrl").asText(""))
                 .rating(node.path("rating").asDouble(0.0))
                 .createdAt(LocalDateTime.now())
                 .build();
     }
 }
+
 
 
 
