@@ -37,17 +37,18 @@ public class GeminiClientService {
             String url = "%s/models/%s:generateContent?key=%s"
                     .formatted(baseUrl, model, apiKey);
 
-            // ✅ Build safe, valid JSON using ObjectMapper
+            // Build JSON
             ObjectNode textNode = mapper.createObjectNode();
             textNode.put("text", prompt);
 
-            ObjectNode partNode = mapper.createObjectNode();
-            partNode.set("parts", mapper.createArrayNode().add(textNode));
+            ObjectNode messageNode = mapper.createObjectNode();
+            messageNode.put("role", "user");  // ✅ REQUIRED
+            messageNode.set("parts", mapper.createArrayNode().add(textNode));
 
-            ObjectNode contentsNode = mapper.createObjectNode();
-            contentsNode.set("contents", mapper.createArrayNode().add(partNode));
+            ObjectNode requestNode = mapper.createObjectNode();
+            requestNode.set("contents", mapper.createArrayNode().add(messageNode));
 
-            String requestJson = mapper.writeValueAsString(contentsNode);
+            String requestJson = mapper.writeValueAsString(requestNode);
 
             log.info("Sending JSON to Gemini: {}", requestJson);
 
@@ -67,24 +68,23 @@ public class GeminiClientService {
 
             JsonNode root = mapper.readTree(rawResponse);
 
-            // Extract Gemini response text
-            String text = root.path("candidates")
+            return root.path("candidates")
                     .path(0)
                     .path("content")
+                    .path(0)
                     .path("parts")
                     .path(0)
                     .path("text")
                     .asText("");
-
-            log.info("Gemini extracted text: {}", text);
-            return text;
 
         } catch (Exception e) {
             log.error("Error calling Gemini API", e);
             throw new RuntimeException("Error calling Gemini API: " + e.getMessage(), e);
         }
     }
+
 }
+
 
 
 
