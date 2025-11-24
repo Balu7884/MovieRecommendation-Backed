@@ -1,6 +1,5 @@
 package com.Balu.Movie_Recommend.Service;
 
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -10,80 +9,96 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 @Slf4j
 @Service
 public class GeminiClientService {
 
-
     private final WebClient webClient;
     private final ObjectMapper mapper = new ObjectMapper();
 
-
     private final String model;
     private final String apiKey;
-
+    private final String baseUrl;
 
     public GeminiClientService(
             @Value("${gemini.api.base-url}") String baseUrl,
             @Value("${gemini.model}") String model,
             @Value("${gemini.api.key}") String apiKey
     ) {
+        this.baseUrl = baseUrl;
         this.model = model;
         this.apiKey = apiKey;
 
-
         this.webClient = WebClient.builder()
-                .baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-// use x-goog-api-key for API key transport (Gemini often accepts this header)
-                .defaultHeader("x-goog-api-key", apiKey)
                 .build();
     }
 
-
     public String getRecommendationsFromGemini(String prompt) {
         try {
-            String url = String.format("/v1beta/models/%s:generateContent", model);
+            // Correct URL (no double v1beta issue)
+            String url = String.format(
+                    "%s/v1beta/models/%s:generateContent?key=%s",
+                    baseUrl,
+                    model,
+                    apiKey
+            );
 
-
+            // Build the correct JSON request
             ObjectNode textNode = mapper.createObjectNode();
             textNode.put("text", prompt);
-
 
             ObjectNode contentNode = mapper.createObjectNode();
             contentNode.set("parts", mapper.createArrayNode().add(textNode));
 
-
             ObjectNode requestNode = mapper.createObjectNode();
             requestNode.set("contents", mapper.createArrayNode().add(contentNode));
 
-
             String requestJson = mapper.writeValueAsString(requestNode);
-            log.info("Sending Gemini request to {}: {}", url, requestJson);
 
+            log.info("Sending Gemini request to {} => {}", url, requestJson);
 
-            String rawResponse = webClient.post()
+            String response = webClient.post()
                     .uri(url)
                     .bodyValue(requestJson)
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
 
+            log.info("Gemini response: {}", response);
 
-            log.debug("Gemini raw response: {}", rawResponse);
+            if (response == null || response.isBlank()) return "";
 
+            JsonNode root = mapper.readTree(response);
 
-            return rawResponse == null ? "" : rawResponse;
+            return root.path("candidates")
+                    .path(0)
+                    .path("content")
+                    .path(0)
+                    .path("text")
+                    .asText("");
 
+        } catch (WebClientResponseException e) {
+
+            // Spring 7+ compatible error handling
+            int status = e.getStatusCode().value();
+            String body = e.getResponseBodyAsString();
+
+            log.error("Gemini API error {}: {}", status, body);
+
+            throw new RuntimeException(
+                    "Gemini API error (" + status + "): " + body
+            );
 
         } catch (Exception e) {
-            log.error("Error calling Gemini API", e);
-            throw new RuntimeException("Error calling Gemini API: " + e.getMessage(), e);
+            log.error("Unknown Gemini error", e);
+            throw new RuntimeException("Gemini API failed: " + e.getMessage());
         }
     }
 }
+
 
 
 
