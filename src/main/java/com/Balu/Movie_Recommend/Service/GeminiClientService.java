@@ -19,83 +19,143 @@ public class GeminiClientService {
     private final ObjectMapper mapper = new ObjectMapper();
 
     private final String model;
-    private final String apiKey;
+    private final String apiKeyOrToken;
     private final String baseUrl;
+    private final String authType; // "apikey" or "bearer"
 
     public GeminiClientService(
             @Value("${gemini.api.base-url}") String baseUrl,
             @Value("${gemini.model}") String model,
-            @Value("${gemini.api.key}") String apiKey
+            @Value("${gemini.api.key}") String apiKeyOrToken,
+            @Value("${gemini.auth.type:apikey}") String authType // optional, defaults to apikey
     ) {
-        this.baseUrl = baseUrl;
+        this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
         this.model = model;
-        this.apiKey = apiKey;
+        this.apiKeyOrToken = apiKeyOrToken;
+        this.authType = authType == null ? "apikey" : authType.toLowerCase();
 
         this.webClient = WebClient.builder()
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .build();
     }
 
+    /**
+     * Try call with v1beta first, fallback to v1 if 404.
+     * Supports two auth modes:
+     * - apikey (append ?key=)
+     * - bearer (use Authorization header)
+     */
     public String getRecommendationsFromGemini(String prompt) {
-        try {
-            // Correct URL (no double v1beta issue)
-            String url = String.format(
-                    "%s/v1beta/models/%s:generateContent?key=%s",
-                    baseUrl,
-                    model,
-                    apiKey
-            );
+        String[] versions = new String[] { "v1beta", "v1" };
 
-            // Build the correct JSON request
-            ObjectNode textNode = mapper.createObjectNode();
-            textNode.put("text", prompt);
+        Exception lastException = null;
 
-            ObjectNode contentNode = mapper.createObjectNode();
-            contentNode.set("parts", mapper.createArrayNode().add(textNode));
+        for (String ver : versions) {
+            String url = buildUrlForVersion(ver);
 
-            ObjectNode requestNode = mapper.createObjectNode();
-            requestNode.set("contents", mapper.createArrayNode().add(contentNode));
+            try {
+                String body = buildRequestJson(prompt);
+                log.info("Calling Gemini at URL [{}] with authMode=[{}]. Body: {}", url, authType, body);
 
-            String requestJson = mapper.writeValueAsString(requestNode);
+                WebClient.RequestBodySpec req = webClient.post()
+                        .uri(url);
 
-            log.info("Sending Gemini request to {} => {}", url, requestJson);
+                if ("bearer".equals(authType)) {
+                    req = req.header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKeyOrToken);
+                }
 
-            String response = webClient.post()
-                    .uri(url)
-                    .bodyValue(requestJson)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
+                // if using API key, we included it in the URL already
+                String response = req
+                        .bodyValue(body)
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block();
 
-            log.info("Gemini response: {}", response);
+                log.debug("Gemini raw response: {}", response);
 
-            if (response == null || response.isBlank()) return "";
+                if (response == null || response.isBlank()) {
+                    throw new RuntimeException("Empty response from Gemini at " + url);
+                }
 
-            JsonNode root = mapper.readTree(response);
+                // typical structure: { candidates: [ { content: { parts: [ { text: "..." } ] } } ] }
+                JsonNode root = mapper.readTree(response);
 
-            return root.path("candidates")
-                    .path(0)
-                    .path("content")
-                    .path(0)
-                    .path("text")
-                    .asText("");
+                // Try common paths
+                String text = root.path("candidates")
+                        .path(0)
+                        .path("content")
+                        .path("parts")
+                        .path(0)
+                        .path("text")
+                        .asText(null);
 
-        } catch (WebClientResponseException e) {
+                if (text == null) {
+                    // older responses sometimes place content differently; try alternative
+                    text = root.path("candidates")
+                            .path(0)
+                            .path("content")
+                            .path(0)
+                            .path("text")
+                            .asText(null);
+                }
 
-            // Spring 7+ compatible error handling
-            int status = e.getStatusCode().value();
-            String body = e.getResponseBodyAsString();
+                if (text == null) {
+                    // not the expected format — return raw for debugging
+                    log.warn("Gemini returned unexpected JSON shape at {}: {}", url, response);
+                    return response;
+                }
 
-            log.error("Gemini API error {}: {}", status, body);
+                return text;
 
-            throw new RuntimeException(
-                    "Gemini API error (" + status + "): " + body
-            );
+            } catch (WebClientResponseException e) {
+                int status = e.getStatusCode().value();
+                String respBody = e.getResponseBodyAsString();
+                log.warn("Gemini returned HTTP {} for URL {} (body: {})", status, url, respBody);
 
-        } catch (Exception e) {
-            log.error("Unknown Gemini error", e);
-            throw new RuntimeException("Gemini API failed: " + e.getMessage());
+                lastException = e;
+
+                // If 404, try next version; otherwise rethrow as runtime
+                if (status == 404) {
+                    log.info("404 on {}, trying next API version if available...", url);
+                    continue;
+                } else {
+                    throw new RuntimeException("Gemini API error (" + status + "): " + respBody, e);
+                }
+            } catch (Exception ex) {
+                log.error("Error calling Gemini at {}: {}", url, ex.getMessage(), ex);
+                lastException = ex;
+                // try next version only for 404s; for others, stop
+                break;
+            }
         }
+
+        // If we reach here, everything failed
+        throw new RuntimeException("All Gemini endpoints failed. Last error: " + (lastException == null ? "unknown" : lastException.getMessage()), lastException);
+    }
+
+    private String buildUrlForVersion(String version) {
+        // version like "v1beta" or "v1"
+        // if auth type is API key, append ?key=
+        if ("apikey".equals(authType)) {
+            return String.format("%s/%s/models/%s:generateContent?key=%s",
+                    baseUrl, version, model, apiKeyOrToken);
+        } else {
+            return String.format("%s/%s/models/%s:generateContent",
+                    baseUrl, version, model);
+        }
+    }
+
+    private String buildRequestJson(String prompt) throws Exception {
+        ObjectNode textNode = mapper.createObjectNode();
+        textNode.put("text", prompt);
+
+        ObjectNode contentNode = mapper.createObjectNode();
+        contentNode.set("parts", mapper.createArrayNode().add(textNode));
+
+        ObjectNode requestNode = mapper.createObjectNode();
+        requestNode.set("contents", mapper.createArrayNode().add(contentNode));
+
+        return mapper.writeValueAsString(requestNode);
     }
 }
 
